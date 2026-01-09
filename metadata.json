@@ -1,0 +1,7 @@
+{
+  "name": "Radar de Oportunidades Sistema S",
+  "description": "Uma plataforma inteligente para monitorar licitações e oportunidades de negócios em diversas instituições do Sistema S com visualização em mapa e analytics.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
