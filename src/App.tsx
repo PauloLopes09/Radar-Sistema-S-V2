@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import Layout from './components/Layout';
 import InstitutionGrid from './components/InstitutionGrid';
 import VisualDashboard from './components/VisualDashboard';
-import { INITIAL_INSTITUTIONS } from './constants';
+import { INITIAL_INSTITUTIONS, STATES } from './constants';
 import { Institution } from './types';
 import { checkInstitutionUpdates } from './services/geminiService';
 
@@ -15,7 +15,7 @@ const App: React.FC = () => {
   
   const [filterState, setFilterState] = useState<string>('All');
   const [searchTerm, setSearchTerm] = useState<string>('');
-  const [scanRange, setScanRange] = useState<string>('últimos 15 dias');
+  const [scanRange, setScanRange] = useState<string>('a partir de 2026');
   const [isScanningAll, setIsScanningAll] = useState(false);
   const [showGuide, setShowGuide] = useState(true);
   
@@ -27,7 +27,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const loadFirebaseData = async () => {
       try {
-        const docRef = doc(db, "usuarios", "meu_radar_id"); // "meu_radar_id" é o nome da sua gaveta no banco
+        const docRef = doc(db, "usuarios", "meu_radar_id");
         const docSnap = await getDoc(docRef);
         
         if (docSnap.exists()) {
@@ -141,6 +141,12 @@ const App: React.FC = () => {
     setIsModalOpen(false);
   };
 
+  // ESTADOS ÚNICOS disponíveis nas instituições
+  const availableStates = useMemo(() => {
+    const states = new Set(institutions.map(inst => inst.state));
+    return ['All', ...Array.from(states).sort()];
+  }, [institutions]);
+
   return (
     <Layout>
       <div className="max-w-7xl mx-auto px-4 py-8">
@@ -163,7 +169,7 @@ const App: React.FC = () => {
             <button 
               onClick={runGlobalScan} 
               disabled={isScanningAll || isApiKeyMissing}
-              className="px-8 py-3 bg-blue-600 text-white rounded-2xl font-black shadow-xl"
+              className="px-8 py-3 bg-blue-600 text-white rounded-2xl font-black shadow-xl disabled:opacity-50"
             >
               {isScanningAll ? 'Buscando...' : 'Varredura Geral'}
             </button>
@@ -176,14 +182,38 @@ const App: React.FC = () => {
           onStateClick={(state) => setFilterState(state === filterState ? 'All' : state)}
         />
 
-        <div className="my-8">
-          <input 
-            type="text" 
-            placeholder="Filtrar sites..." 
-            className="w-full p-4 bg-white border rounded-2xl outline-none"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
+        {/* NOVO: FILTRO DE ESTADO DROPDOWN */}
+        <div className="my-8 flex flex-col md:flex-row gap-4">
+          <div className="flex-1">
+            <input 
+              type="text" 
+              placeholder="Filtrar por nome ou sigla..." 
+              className="w-full p-4 bg-white border-2 border-slate-200 rounded-2xl outline-none focus:border-blue-500 transition-colors"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+          
+          <div className="md:w-64">
+            <select 
+              value={filterState}
+              onChange={(e) => setFilterState(e.target.value)}
+              className="w-full p-4 bg-white border-2 border-slate-200 rounded-2xl outline-none focus:border-blue-500 transition-colors font-bold cursor-pointer"
+            >
+              {availableStates.map(state => (
+                <option key={state} value={state}>
+                  {state === 'All' ? '📍 Todos os Estados' : `📍 ${state}`}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* CONTADOR DE RESULTADOS */}
+        <div className="mb-6 text-slate-600 font-medium">
+          {filteredInstitutions.length === institutions.length 
+            ? `Mostrando todos os ${institutions.length} portais`
+            : `${filteredInstitutions.length} de ${institutions.length} portais`}
         </div>
 
         <InstitutionGrid 
@@ -200,6 +230,23 @@ const App: React.FC = () => {
               <div className="space-y-5">
                 <input 
                   className="w-full p-4 bg-slate-50 rounded-2xl outline-none"
+                  placeholder="Nome (Ex: SENAI)"
+                  value={formData.name}
+                  onChange={(e) => setFormData({...formData, name: e.target.value})}
+                />
+                
+                <select
+                  className="w-full p-4 bg-slate-50 rounded-2xl outline-none cursor-pointer font-medium"
+                  value={formData.state}
+                  onChange={(e) => setFormData({...formData, state: e.target.value})}
+                >
+                  {STATES.map(state => (
+                    <option key={state} value={state}>{state}</option>
+                  ))}
+                </select>
+
+                <input 
+                  className="w-full p-4 bg-slate-50 rounded-2xl outline-none"
                   placeholder="Sigla (Ex: SENAI RN)"
                   value={formData.initials}
                   onChange={(e) => setFormData({...formData, initials: e.target.value})}
@@ -212,8 +259,8 @@ const App: React.FC = () => {
                 />
               </div>
               <div className="mt-10 flex gap-4">
-                <button onClick={() => setIsModalOpen(false)} className="flex-grow font-bold text-slate-400">Cancelar</button>
-                <button onClick={savePortal} className="flex-grow py-4 bg-blue-600 text-white rounded-2xl font-black">Salvar</button>
+                <button onClick={() => setIsModalOpen(false)} className="flex-grow font-bold text-slate-400 hover:text-slate-600 transition-colors">Cancelar</button>
+                <button onClick={savePortal} className="flex-grow py-4 bg-blue-600 text-white rounded-2xl font-black hover:bg-blue-700 transition-colors">Salvar</button>
               </div>
             </div>
           </div>
