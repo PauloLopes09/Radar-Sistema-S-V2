@@ -5,74 +5,42 @@ import VisualDashboard from './components/VisualDashboard';
 import { INITIAL_INSTITUTIONS, STATES } from './constants';
 import { Institution } from './types';
 import { checkInstitutionUpdates } from './services/geminiService';
-
-// IMPORTAÇÕES DO FIREBASE
 import { db } from './services/firebaseConfig';
 import { doc, setDoc, getDoc } from "firebase/firestore";
 
 const App: React.FC = () => {
   const [institutions, setInstitutions] = useState<Institution[]>(INITIAL_INSTITUTIONS);
-  
   const [filterState, setFilterState] = useState<string>('All');
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [scanRange, setScanRange] = useState<string>('a partir de 2026');
   const [isScanningAll, setIsScanningAll] = useState(false);
-  const [showGuide, setShowGuide] = useState(true);
-  
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [formData, setFormData] = useState({ name: 'SENAI', state: 'São Paulo', initials: '', url: '' });
+  const [formData, setFormData] = useState({ name: '', state: 'São Paulo', initials: '', url: '' });
 
-  // 1. CARREGAR DADOS DO FIREBASE AO ABRIR O SITE
+  // Carregar do Firebase
   useEffect(() => {
-    const loadFirebaseData = async () => {
+    const loadData = async () => {
       try {
-        const docRef = doc(db, "usuarios", "meu_radar_id");
-        const docSnap = await getDoc(docRef);
-        
-        if (docSnap.exists()) {
-          setInstitutions(docSnap.data().institutions);
-        }
-      } catch (error) {
-        console.error("Erro ao carregar do Firebase:", error);
-      }
+        const docSnap = await getDoc(doc(db, "usuarios", "meu_radar_id"));
+        if (docSnap.exists()) setInstitutions(docSnap.data().institutions);
+      } catch (e) { console.error("Erro Firebase", e); }
     };
-    loadFirebaseData();
+    loadData();
   }, []);
 
-  // 2. SALVAR NO FIREBASE SEMPRE QUE MUDAR ALGO
+  // Salvar no Firebase
   useEffect(() => {
-    const saveFirebaseData = async () => {
-      try {
-        await setDoc(doc(db, "usuarios", "meu_radar_id"), { 
-          institutions,
-          lastUpdated: new Date().toISOString()
-        });
-      } catch (error) {
-        console.error("Erro ao salvar no Firebase:", error);
-      }
-    };
     if (institutions !== INITIAL_INSTITUTIONS) {
-      saveFirebaseData();
+      setDoc(doc(db, "usuarios", "meu_radar_id"), { 
+        institutions, lastUpdated: new Date().toISOString() 
+      }).catch(e => console.error(e));
     }
   }, [institutions]);
 
-  const isApiKeyMissing = !import.meta.env.VITE_GEMINI_API_KEY;
-
-  const filteredInstitutions = useMemo(() => {
-    return institutions.filter(inst => {
-      const matchState = filterState === 'All' || inst.state === filterState;
-      const matchSearch = inst.initials.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                          inst.state.toLowerCase().includes(searchTerm.toLowerCase());
-      return matchState && matchSearch;
-    });
-  }, [filterState, searchTerm, institutions]);
-
   const handleSingleCheck = async (inst: Institution) => {
-    if (isApiKeyMissing) {
-      alert("Configuração de API pendente na Vercel.");
-      return;
-    }
+    if (!import.meta.env.VITE_GEMINI_API_KEY) return alert("Sem chave API");
+    
     try {
       const results = await checkInstitutionUpdates(inst.name, inst.state, inst.url, scanRange);
       setInstitutions(prev => prev.map(item => 
@@ -80,187 +48,79 @@ const App: React.FC = () => {
           ? { ...item, lastChecked: new Date().toISOString(), lastResults: results }
           : item
       ));
-    } catch (e) {
-      console.error(e);
-    }
+    } catch (e) { console.error(e); }
   };
 
   const runGlobalScan = async () => {
-    if (isApiKeyMissing) return;
     setIsScanningAll(true);
-    setShowGuide(false);
-    
-    for (let i = 0; i < filteredInstitutions.length; i++) {
-      const inst = filteredInstitutions[i];
-      try {
-        const results = await checkInstitutionUpdates(inst.name, inst.state, inst.url, scanRange);
-        setInstitutions(prev => prev.map(item => 
-          item.id === inst.id 
-            ? { ...item, lastChecked: new Date().toISOString(), lastResults: results }
-            : item
-        ));
-      } catch (e) {
-        console.error(e);
-      }
+    const targets = institutions.filter(inst => 
+      (filterState === 'All' || inst.state === filterState) &&
+      (inst.name.toLowerCase().includes(searchTerm.toLowerCase()) || inst.initials.toLowerCase().includes(searchTerm.toLowerCase()))
+    );
+
+    for (const inst of targets) {
+      await handleSingleCheck(inst);
     }
     setIsScanningAll(false);
   };
 
-  const openAddModal = () => {
-    setEditingId(null);
-    setFormData({ name: 'SENAI', state: 'São Paulo', initials: '', url: '' });
-    setIsModalOpen(true);
-  };
-
-  const openEditModal = (inst: Institution) => {
-    setEditingId(inst.id);
-    setFormData({ name: inst.name, state: inst.state, initials: inst.initials, url: inst.url });
-    setIsModalOpen(true);
-  };
-
-  const handleDeletePortal = (id: string) => {
-    if (window.confirm('Remover este portal do radar?')) {
-      setInstitutions(prev => prev.filter(inst => inst.id !== id));
-    }
-  };
-
   const savePortal = () => {
-    if (!formData.initials || !formData.url) return;
     if (editingId) {
-      setInstitutions(prev => prev.map(inst => 
-        inst.id === editingId ? { ...inst, ...formData } : inst
-      ));
+      setInstitutions(prev => prev.map(i => i.id === editingId ? { ...i, ...formData } : i));
     } else {
-      const newPortal: Institution = {
-        id: Math.random().toString(36).substr(2, 9),
-        ...formData,
-        status: 'online'
-      };
-      setInstitutions([newPortal, ...institutions]);
+      setInstitutions([...institutions, { ...formData, id: Math.random().toString(36).substr(2, 9), status: 'online' }]);
     }
     setIsModalOpen(false);
   };
 
-  // ESTADOS ÚNICOS disponíveis nas instituições
-  const availableStates = useMemo(() => {
-    const states = new Set(institutions.map(inst => inst.state));
-    return ['All', ...Array.from(states).sort()];
-  }, [institutions]);
+  // Filtragem visual
+  const filteredInstitutions = useMemo(() => institutions.filter(inst => {
+    const matchState = filterState === 'All' || inst.state === filterState;
+    const matchSearch = inst.initials.toLowerCase().includes(searchTerm.toLowerCase()) || inst.name.toLowerCase().includes(searchTerm.toLowerCase());
+    return matchState && matchSearch;
+  }), [institutions, filterState, searchTerm]);
 
   return (
     <Layout>
       <div className="max-w-7xl mx-auto px-4 py-8">
-        {isApiKeyMissing && (
-          <div className="mb-8 bg-amber-50 border-2 border-amber-200 rounded-3xl p-6 text-amber-800">
-             Chave de IA não configurada.
-          </div>
-        )}
-
-        <div className="mb-10 flex flex-col md:flex-row justify-between gap-6">
-          <div>
-            <h2 className="text-4xl font-black text-slate-900">Radar QZ</h2>
-            <p className="text-slate-500 font-medium">Sincronizado na Nuvem com Firebase.</p>
-          </div>
-          
-          <div className="flex gap-3">
-            <button onClick={openAddModal} className="px-6 py-3 bg-slate-100 rounded-2xl font-bold">
-              + Adicionar Site
-            </button>
-            <button 
-              onClick={runGlobalScan} 
-              disabled={isScanningAll || isApiKeyMissing}
-              className="px-8 py-3 bg-blue-600 text-white rounded-2xl font-black shadow-xl disabled:opacity-50"
-            >
-              {isScanningAll ? 'Buscando...' : 'Varredura Geral'}
+        <div className="flex justify-between items-center mb-8">
+          <h2 className="text-3xl font-black">Radar de Licitações</h2>
+          <div className="flex gap-2">
+            <button onClick={() => { setEditingId(null); setIsModalOpen(true); }} className="px-4 py-2 bg-slate-200 rounded-lg font-bold">+ Novo</button>
+            <button onClick={runGlobalScan} disabled={isScanningAll} className="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold">
+              {isScanningAll ? 'Varrendo...' : 'Varredura Geral'}
             </button>
           </div>
         </div>
 
-        <VisualDashboard 
-          institutions={institutions} 
-          activeState={filterState}
-          onStateClick={(state) => setFilterState(state === filterState ? 'All' : state)}
-        />
+        <VisualDashboard institutions={institutions} activeState={filterState} onStateClick={s => setFilterState(s === filterState ? 'All' : s)} />
 
-        {/* NOVO: FILTRO DE ESTADO DROPDOWN */}
-        <div className="my-8 flex flex-col md:flex-row gap-4">
-          <div className="flex-1">
-            <input 
-              type="text" 
-              placeholder="Filtrar por nome ou sigla..." 
-              className="w-full p-4 bg-white border-2 border-slate-200 rounded-2xl outline-none focus:border-blue-500 transition-colors"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-          </div>
-          
-          <div className="md:w-64">
-            <select 
-              value={filterState}
-              onChange={(e) => setFilterState(e.target.value)}
-              className="w-full p-4 bg-white border-2 border-slate-200 rounded-2xl outline-none focus:border-blue-500 transition-colors font-bold cursor-pointer"
-            >
-              {availableStates.map(state => (
-                <option key={state} value={state}>
-                  {state === 'All' ? '📍 Todos os Estados' : `📍 ${state}`}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* CONTADOR DE RESULTADOS */}
-        <div className="mb-6 text-slate-600 font-medium">
-          {filteredInstitutions.length === institutions.length 
-            ? `Mostrando todos os ${institutions.length} portais`
-            : `${filteredInstitutions.length} de ${institutions.length} portais`}
+        <div className="flex gap-4 my-6">
+          <input className="flex-1 p-3 border rounded-xl" placeholder="Buscar..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+          <select className="p-3 border rounded-xl" value={filterState} onChange={e => setFilterState(e.target.value)}>
+            <option value="All">Todos os Estados</option>
+            {STATES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
         </div>
 
         <InstitutionGrid 
           institutions={filteredInstitutions} 
-          onReload={handleSingleCheck}
-          onEdit={openEditModal}
-          onDelete={handleDeletePortal}
+          onReload={handleSingleCheck} 
+          onEdit={(inst) => { setEditingId(inst.id); setFormData(inst); setIsModalOpen(true); }}
+          onDelete={(id) => setInstitutions(prev => prev.filter(i => i.id !== id))}
         />
 
         {isModalOpen && (
-          <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-[40px] p-10 max-w-md w-full shadow-2xl">
-              <h3 className="text-3xl font-black mb-8">{editingId ? 'Editar' : 'Novo Portal'}</h3>
-              <div className="space-y-5">
-                <input 
-                  className="w-full p-4 bg-slate-50 rounded-2xl outline-none"
-                  placeholder="Nome (Ex: SENAI)"
-                  value={formData.name}
-                  onChange={(e) => setFormData({...formData, name: e.target.value})}
-                />
-                
-                <select
-                  className="w-full p-4 bg-slate-50 rounded-2xl outline-none cursor-pointer font-medium"
-                  value={formData.state}
-                  onChange={(e) => setFormData({...formData, state: e.target.value})}
-                >
-                  {STATES.map(state => (
-                    <option key={state} value={state}>{state}</option>
-                  ))}
-                </select>
-
-                <input 
-                  className="w-full p-4 bg-slate-50 rounded-2xl outline-none"
-                  placeholder="Sigla (Ex: SENAI RN)"
-                  value={formData.initials}
-                  onChange={(e) => setFormData({...formData, initials: e.target.value})}
-                />
-                <input 
-                  className="w-full p-4 bg-slate-50 rounded-2xl outline-none"
-                  placeholder="Link das Licitações"
-                  value={formData.url}
-                  onChange={(e) => setFormData({...formData, url: e.target.value})}
-                />
-              </div>
-              <div className="mt-10 flex gap-4">
-                <button onClick={() => setIsModalOpen(false)} className="flex-grow font-bold text-slate-400 hover:text-slate-600 transition-colors">Cancelar</button>
-                <button onClick={savePortal} className="flex-grow py-4 bg-blue-600 text-white rounded-2xl font-black hover:bg-blue-700 transition-colors">Salvar</button>
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+            <div className="bg-white p-8 rounded-3xl w-full max-w-md space-y-4">
+              <h3 className="text-2xl font-bold">{editingId ? 'Editar' : 'Adicionar'} Portal</h3>
+              <input className="w-full p-3 border rounded-xl" placeholder="Nome (Ex: SENAI)" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+              <input className="w-full p-3 border rounded-xl" placeholder="Sigla (Ex: SENAI SP)" value={formData.initials} onChange={e => setFormData({...formData, initials: e.target.value})} />
+              <select className="w-full p-3 border rounded-xl" value={formData.state} onChange={e => setFormData({...formData, state: e.target.value})}>{STATES.map(s => <option key={s} value={s}>{s}</option>)}</select>
+              <input className="w-full p-3 border rounded-xl" placeholder="URL" value={formData.url} onChange={e => setFormData({...formData, url: e.target.value})} />
+              <div className="flex gap-2 pt-4">
+                <button onClick={() => setIsModalOpen(false)} className="flex-1 py-3 text-slate-500 font-bold">Cancelar</button>
+                <button onClick={savePortal} className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold">Salvar</button>
               </div>
             </div>
           </div>
