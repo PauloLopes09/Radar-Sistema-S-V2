@@ -10,96 +10,109 @@ const getAIClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
-export async function checkInstitutionUpdates(
+// 1. LÓGICA OFICIAL: SESC RN (Busca direta na API)
+async function fetchSescRNOfficial(url: string, institutionName: string): Promise<Opportunity[]> {
+  try {
+    const anoAlvo = 2026;
+    console.log(`📡 Acessando API Oficial SESC RN para ${anoAlvo}...`);
+
+    const apiUrl = `http://transparencia.rn.sesc.com.br/transparencia/api/licitacoes?ano=${anoAlvo}`;
+    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(apiUrl)}`;
+
+    const response = await fetch(proxyUrl);
+    const data = await response.json();
+
+    if (!data.contents) return [];
+
+    const licitacoes = JSON.parse(data.contents);
+
+    if (!Array.isArray(licitacoes) || licitacoes.length === 0) {
+      return [];
+    }
+
+    return licitacoes.map((item: any, index: number) => ({
+      id: `sesc-rn-${item.id || index}`,
+      title: `Processo ${item.id} (${item.modalidade})`,
+      description: item.objeto || "Objeto não informado",
+      date: item.data_abertura || item.data_publicacao || new Date().toLocaleDateString(),
+      link: item.anexos && item.anexos.length > 0 ? item.anexos[0].url : url,
+      institution: institutionName,
+      isNew: true
+    }));
+
+  } catch (error) {
+    console.error("Erro na API SESC RN:", error);
+    return [];
+  }
+}
+
+// 2. LÓGICA GERAL: IA + GOOGLE SEARCH
+async function fetchWithGeminiSearch(
   institutionName: string, 
   state: string, 
   url: string,
-  timeRange: string = "a partir de 2026"
+  timeRange: string
 ): Promise<Opportunity[]> {
   const ai = getAIClient();
   
   if (!ai) {
-    console.warn("API_KEY não configurada. A busca simulada será retornada.");
+    console.warn("API Key não encontrada.");
     return [];
   }
 
   try {
     const response = await ai.models.generateContent({
       model: "gemini-2.0-flash-exp",
-      contents: `Busque TODAS as licitações e oportunidades de negócio publicadas a partir de 2026 (incluindo anos futuros) para ${institutionName} no estado ${state}.
-
-URL OFICIAL para consulta: ${url}
-
-INSTRUÇÕES CRÍTICAS:
-1. Acesse o site oficial usando a URL fornecida
-2. Busque licitações publicadas a partir de 2026 em diante (2026, 2027, 2028...)
-3. IGNORE completamente licitações de 2025, 2024 ou anos anteriores
-4. Liste TODAS as oportunidades encontradas, não apenas as mais recentes
-5. Para cada licitação, inclua:
-   - Número do edital ou processo
-   - Título/objeto da licitação
-   - Data de publicação (formato: DD/MM/AAAA)
-   - Prazo de entrega/validade (se disponível)
-   - Valor estimado (se disponível)
-
-6. Se NÃO encontrar nenhuma licitação a partir de 2026, responda EXATAMENTE: "Nenhuma oportunidade encontrada a partir de 2026"
-
-FORMATO DE RESPOSTA:
-Liste cada licitação em um parágrafo separado, começando com a data e número do processo.
-
-Exemplo:
-"15/01/2026 - Edital 001/2026: Fornecimento de equipamentos industriais. Valor: R$ 150.000,00. Prazo: 30/01/2026."
-"05/03/2027 - Pregão 023/2027: Serviços de manutenção predial. Valor: R$ 80.000,00. Prazo: 20/03/2027."`,
-      config: {
-        tools: [{ googleSearch: {} }],
-      },
+      contents: `Busque licitações a partir de ${timeRange} para ${institutionName} em ${state}. URL: ${url}.
+      Se não houver nada, responda "Nenhuma oportunidade".
+      Liste cada item em uma linha separada.`,
+      config: { tools: [{ googleSearch: {} }] },
     });
 
     const text = response.text || "";
-    
-    // Verifica se não encontrou nada a partir de 2026
-    if (text.toLowerCase().includes("nenhuma oportunidade encontrada a partir de 2026") || 
-        text.toLowerCase().includes("nenhuma oportunidade") || 
-        text.length < 20) {
+
+    if (text.toLowerCase().includes("nenhuma oportunidade") || text.length < 20) {
       return [];
     }
 
-    // Divide o texto em múltiplas oportunidades (por linha ou parágrafo)
     const opportunities: Opportunity[] = [];
-    const lines = text.split('\n').filter(line => line.trim().length > 0);
+    const lines = text.split('\n').filter(line => line.trim().length > 20);
 
-    // Se houver múltiplas linhas, cria uma oportunidade para cada
-    if (lines.length > 1) {
-      lines.forEach((line, index) => {
-        if (line.trim().length > 20) {
-          opportunities.push({
-            id: Math.random().toString(36).substr(2, 9),
-            title: `Licitação ${index + 1} - ${institutionName}`,
-            date: new Date().toLocaleDateString(),
-            description: line.trim(),
-            link: url,
-            institution: institutionName,
-            isNew: true
-          });
-        }
-      });
-    } else {
-      // Se for uma única resposta, retorna como antes
+    lines.forEach((line, index) => {
       opportunities.push({
         id: Math.random().toString(36).substr(2, 9),
-                    title: `Oportunidades a partir de 2026 - ${institutionName}`,
+        title: `Oportunidade IA ${index + 1}`,
         date: new Date().toLocaleDateString(),
-        description: text,
+        description: line.trim(),
         link: url,
         institution: institutionName,
         isNew: true
       });
-    }
+    });
 
     return opportunities;
 
   } catch (error) {
-    console.error(`Erro na busca de ${institutionName}:`, error);
+    console.error(`Erro IA ${institutionName}:`, error);
     return [];
   }
+}
+
+// 3. FUNÇÃO PRINCIPAL (ROTEADOR)
+export async function checkInstitutionUpdates(
+  institutionName: string, 
+  state: string, 
+  url: string,
+  timeRange: string = "a partir de 2026"
+): Promise<Opportunity[]> {
+
+  // Se for SESC RN, usa a rota oficial
+  if (institutionName.toUpperCase().includes("SESC") && 
+     (state.toUpperCase() === "RN" || state.toUpperCase().includes("RIO GRANDE"))) {
+       const dadosOficiais = await fetchSescRNOfficial(url, institutionName);
+       if (dadosOficiais.length > 0) return dadosOficiais;
+  }
+
+  // Para todo o resto, usa a IA
+  return await fetchWithGeminiSearch(institutionName, state, url, timeRange);
 }
