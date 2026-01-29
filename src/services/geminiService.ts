@@ -1,22 +1,18 @@
-import { GoogleGenAI } from "@google/genai";
 import { Opportunity } from "../types";
 
-// Função para obter o cliente da IA de forma segura
-const getAIClient = () => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-  if (!apiKey || apiKey === "undefined") {
-    return null;
-  }
-  return new GoogleGenAI({ apiKey });
-};
-
-// 1. LÓGICA OFICIAL: SESC RN (Busca direta na API)
+/**
+ * 1. CONECTOR OFICIAL: SESC RIO GRANDE DO NORTE
+ * Endpoint Oficial: http://transparencia.rn.sesc.com.br/transparencia/api/licitacoes
+ * Nota: Usa Proxy para evitar bloqueio de Misto de Conteúdo (HTTP vs HTTPS)
+ */
 async function fetchSescRNOfficial(url: string, institutionName: string): Promise<Opportunity[]> {
   try {
+    // Forçamos o ano atual do sistema (2026)
     const anoAlvo = 2026;
     console.log(`📡 Acessando API Oficial SESC RN para ${anoAlvo}...`);
 
     const apiUrl = `http://transparencia.rn.sesc.com.br/transparencia/api/licitacoes?ano=${anoAlvo}`;
+    // Proxy AllOrigins para permitir que o front (HTTPS) leia a API (HTTP)
     const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(apiUrl)}`;
 
     const response = await fetch(proxyUrl);
@@ -26,93 +22,85 @@ async function fetchSescRNOfficial(url: string, institutionName: string): Promis
 
     const licitacoes = JSON.parse(data.contents);
 
+    // Validação de segurança
     if (!Array.isArray(licitacoes) || licitacoes.length === 0) {
-      return [];
+      return [{
+        id: "msg-empty",
+        title: "Nenhuma licitação encontrada",
+        description: `A API oficial do SESC RN não retornou registros para o ano de ${anoAlvo} até o momento.`,
+        date: new Date().toLocaleDateString(),
+        link: url,
+        institution: institutionName,
+        isNew: false
+      }];
     }
 
+    // Mapeamento: Transforma o JSON do SESC no formato do nosso App
     return licitacoes.map((item: any, index: number) => ({
       id: `sesc-rn-${item.id || index}`,
-      title: `Processo ${item.id} (${item.modalidade})`,
-      description: item.objeto || "Objeto não informado",
-      date: item.data_abertura || item.data_publicacao || new Date().toLocaleDateString(),
+      title: `Processo ${item.id} (${item.modalidade || 'Licitação'})`,
+      description: item.objeto || "Objeto não detalhado na API.",
+      date: item.data_abertura || item.data_publicacao || "Data n/a",
+      // Tenta pegar o link do primeiro anexo, senão usa o link do portal
       link: item.anexos && item.anexos.length > 0 ? item.anexos[0].url : url,
       institution: institutionName,
-      isNew: true
+      isNew: true // Destaca como novo
     }));
 
   } catch (error) {
-    console.error("Erro na API SESC RN:", error);
-    return [];
+    console.error("Erro no conector SESC RN:", error);
+    return [{
+      id: "err-sesc",
+      title: "Erro de Conexão",
+      description: "Não foi possível conectar ao servidor de Transparência do SESC RN. O site pode estar fora do ar.",
+      date: new Date().toLocaleDateString(),
+      link: url,
+      institution: institutionName,
+      isNew: false
+    }];
   }
 }
 
-// 2. LÓGICA GERAL: IA + GOOGLE SEARCH
-async function fetchWithGeminiSearch(
-  institutionName: string, 
-  state: string, 
-  url: string,
-  timeRange: string
-): Promise<Opportunity[]> {
-  const ai = getAIClient();
-  
-  if (!ai) {
-    console.warn("API Key não encontrada.");
-    return [];
-  }
-
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash-exp",
-      contents: `Busque licitações a partir de ${timeRange} para ${institutionName} em ${state}. URL: ${url}.
-      Se não houver nada, responda "Nenhuma oportunidade".
-      Liste cada item em uma linha separada.`,
-      config: { tools: [{ googleSearch: {} }] },
-    });
-
-    const text = response.text || "";
-
-    if (text.toLowerCase().includes("nenhuma oportunidade") || text.length < 20) {
-      return [];
-    }
-
-    const opportunities: Opportunity[] = [];
-    const lines = text.split('\n').filter(line => line.trim().length > 20);
-
-    lines.forEach((line, index) => {
-      opportunities.push({
-        id: Math.random().toString(36).substr(2, 9),
-        title: `Oportunidade IA ${index + 1}`,
-        date: new Date().toLocaleDateString(),
-        description: line.trim(),
-        link: url,
-        institution: institutionName,
-        isNew: true
-      });
-    });
-
-    return opportunities;
-
-  } catch (error) {
-    console.error(`Erro IA ${institutionName}:`, error);
-    return [];
-  }
+/**
+ * 🚧 PLACEHOLDER: MENSAGEM PADRÃO
+ * Retornada quando tentamos buscar uma instituição que ainda não tem API configurada.
+ */
+async function apiNotConfigured(institutionName: string): Promise<Opportunity[]> {
+  return [{
+    id: "sys-msg",
+    title: "Integração via API Pendente",
+    description: `Ainda não configuramos o endpoint oficial para ${institutionName}. Por favor, adicione o conector no código (geminiService.ts).`,
+    date: new Date().toLocaleDateString(),
+    link: "#",
+    institution: institutionName,
+    isNew: false
+  }];
 }
 
-// 3. FUNÇÃO PRINCIPAL (ROTEADOR)
+/**
+ * 🔀 ROTEADOR CENTRAL (HUB DE APIs)
+ * Direciona o pedido para a função correta baseada no nome da instituição.
+ */
 export async function checkInstitutionUpdates(
   institutionName: string, 
   state: string, 
   url: string,
-  timeRange: string = "a partir de 2026"
+  timeRange: string // Mantido para compatibilidade, mas ignorado nas APIs fixas
 ): Promise<Opportunity[]> {
 
-  // Se for SESC RN, usa a rota oficial
-  if (institutionName.toUpperCase().includes("SESC") && 
-     (state.toUpperCase() === "RN" || state.toUpperCase().includes("RIO GRANDE"))) {
-       const dadosOficiais = await fetchSescRNOfficial(url, institutionName);
-       if (dadosOficiais.length > 0) return dadosOficiais;
+  const nameUpper = institutionName.toUpperCase();
+  const stateUpper = state.toUpperCase();
+
+  // --- ROTA 1: SESC RN ---
+  if (nameUpper.includes("SESC") && (stateUpper === "RN" || stateUpper.includes("RIO GRANDE"))) {
+    return await fetchSescRNOfficial(url, institutionName);
   }
 
-  // Para todo o resto, usa a IA
-  return await fetchWithGeminiSearch(institutionName, state, url, timeRange);
+  // --- ROTA 2: Futuro SENAC PE ---
+  // if (nameUpper.includes("SENAC") && stateUpper.includes("PE")) {
+  //   return await fetchSenacPEOfficial(url);
+  // }
+
+  // --- ROTA PADRÃO (Sem API definida) ---
+  return await apiNotConfigured(institutionName);
 }
